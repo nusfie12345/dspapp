@@ -477,6 +477,3 @@ class Flanger(Effect):
             self.delay_write(x[n] + feedback * delay)
 
         return y
-
-
-        
