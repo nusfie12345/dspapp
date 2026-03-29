@@ -121,7 +121,7 @@ class Effect:
 
 class Compressor(Effect):
 
-    # 
+    # anti-fizzy stuff
 
     def __init__(self, sens, level, atk=5e-04, rel=0.01, r=4, fs=44100):
         super().__init__(fs)
@@ -184,14 +184,16 @@ class Compressor(Effect):
 class Overdrive(Effect):
 
     # y = atan2(gx + b) or y = tanh(gx + b)
-    # TO IMPLEMENT: b (asymmetry coefficient)
+    # TO IMPLEMENT: atan2 type of OD(togglable)
 
-    def __init__(self, drive, tone, level, fs=44100):
+    def __init__(self, drive, tone, asym, level, clip="tanh", fs=44100):
         super().__init__(fs)
         self.params = {
             "drive": scale_down(drive),
             "tone": scale_down(tone),
-            "level": scale_down(level)
+            "asymmetry": scale_down(asym),
+            "level": scale_down(level),
+            "clip": clip   # didn't want to make it into a separate effect, so will be a simple switch
         }
         self.enabled = False
 
@@ -217,20 +219,148 @@ class Overdrive(Effect):
         drive = self.params["drive"]
         tone = self.params["tone"]
         level = self.params["level"]
+        b = self.params["asymmetry"]
         fs = self.params["fs"]
+        clip = self.params["clip"]
         
         drive = drive_eff(drive, 1, 20)
         vol = volume(level)
 
         x = highpass(x, 720, fs)
-        x = np.tanh(drive*x)
+
+        if clip == "atan":
+            x = np.arctan(drive*x + b)
+        elif clip == "tanh":
+            x = np.tanh(drive*x + b)
+        else:
+            raise ValueError("Invalid clip type. Use 'atan' or 'tanh'.")
         x = lowpass(x, 1000+(tone*4000), fs)
+
+        return vol * x
+    
+class Distortion(Effect):
+
+    # good ol classic, harsher clip and steeper gain but more bass at LPF, also no asymmetry control
+
+    def __init__(self, dist, tone, level, fs=44100):
+        super().__init__(fs)
+        self.params = {
+            "dist": scale_down(dist),
+            "tone": scale_down(tone),
+            "level": scale_down(level)
+        }
+        self.enabled = False
+
+    def upd_param(self):
+        pass
+
+    def set_param(self, name, val):
+        if val < 0 or val > 10:
+            val = scale_down(val)
+        self.params[name] = val
+        self.upd_param()
+
+    def toggle(self):
+        if self.enabled == True:
+            return False
+        else:
+            return True
+        
+    def hardclip(x, T):
+        return np.clip(x, -T, T)
+    
+    def seesaw_tone(x, tone, samp=44100, f0=1000):
+
+        tilt = 6 * (tone * 0.5)
+        X = np.fft.rfft(x)
+        frq = np.fft.rfftfreq(len(x), 1/samp)
+
+        H = np.ones_like(frq)
+        H[frq < f0] /= tilt
+        H[frq > f0] *= tilt
+
+        x_EQ_dist = X * H
+        return np.fft.irfft(x_EQ_dist, len(x))
+        
+    def process(self, x):
+        if not self.enabled:
+            return x
+        
+        dist = self.params["dist"]
+        tone = self.params["tone"]
+        level = self.params["level"]
+        fs = self.params["fs"]
+        
+        dist = drive_eff(dist, 1, 50)
+        vol = volume(level)
+
+        x = highpass(x, 100, fs) # for them lower grooves
+        x = self.hardclip(dist*x, 0.6) # taking the boss ds1 +-T value, idk maybe make it a parameter later
+        x = self.seesaw_tone(x, tone, fs, 1000)
+
+        return vol * x
+    
+class Fuzz(Effect):
+
+    # just so y'all don't break your equipment for those square-like waves
+
+    def __init__(self, sustain, tone, level, fs=44100):
+        super().__init__(fs)
+        self.params = {
+            "sustain": scale_down(sustain), # cuz this is hella strong drive, might as well be just sustain
+            "tone": scale_down(tone),
+            "level": scale_down(level),
+        }
+        self.enabled = False
+
+    def upd_param(self):
+        pass
+
+    def set_param(self, name, val):
+        if val < 0 or val > 10:
+            val = scale_down(val)
+        self.params[name] = val
+        self.upd_param()
+
+    def toggle(self):
+        if self.enabled == True:
+            return False
+        else:
+            return True
+        
+    def hardclip(x, T):
+        return np.clip(x, -T, T)
+        
+    def tone_stack(x, tone):
+        fq_lo = 200 + 1800 * (1 - tone)
+        fq_hi = 3000 + 8000 * tone
+        out_lo = lowpass(x, fq_lo)
+        out_hi = highpass(x, fq_hi) # a bit counterintuitive but this scoops the mids
+        return tone * out_hi + (1 - tone) * out_lo
+        
+    def process(self, x):
+        if not self.enabled:
+            return x
+        
+        sustain = self.params["sustain"]
+        tone = self.params["tone"]
+        level = self.params["level"]
+        fs = self.params["fs"]
+        
+        fuzz = drive_eff(sustain, 5, 200)
+        vol = volume(level)
+
+        # also screw your HPF, we going hard
+
+        x = self.hardclip(fuzz * x, 1)
+        x = self.tone_stack(x, tone)
+        x = self.hardclip(fuzz * x, 1)
 
         return vol * x
 
 class BlockAmp(Effect):
 
-    # a bunch of shelf filters + some basic overdrive
+    # a bunch of shelf filters + some basic overdrive. THE holy grail for literally every player, EVH used only the block amp for distortion
 
     def __init__(self, gain, tone, bass, mid, treb, pres, vol, fs=44100):
         super().__init__(fs)
@@ -259,6 +389,8 @@ class BlockAmp(Effect):
             return False
         else:
             return True
+        
+    # tons of amp-specific filters ahead, nothing much. just stack em up and you have the block amp
         
     def preamp_gain(x, gain, dc=0):
         gain = scale_down(gain)
@@ -414,13 +546,15 @@ class Flanger(Effect):
 
         return y
 
-class Flanger(Effect):
+class Chorus(Effect):
 
-    # same as flanger - but delay is much longer
+    # LITERALLY FLANGER BUT WITH A FEW TWEAKS
 
-    def __init__(self, feedback, mix, fs=44100):
+    def __init__(self, rate, depth, feedback, mix, fs=44100):
         super().__init__(fs)
         self.params = {
+            "rate": scale_down(rate),
+            "depth": scale_down(depth),
             "feedback": scale_down(feedback),
             "mix": scale_down(mix)
         }
@@ -456,14 +590,97 @@ class Flanger(Effect):
         i1 = (i0 + 1) % self.max_delay
 
         f = read_idx - i0
-        flang_delay = (1 - f) * self.buffer[i0] + f * self.buffer[i1]
-        return flang_delay
+        chor_delay = (1 - f) * self.buffer[i0] + f * self.buffer[i1]
+        return chor_delay
 
     def process(self, x):
         if not self.enabled:
             return x
 
-        base_delay = 0.05 + 1.5*self.params["delay"]
+        rate = 0.01 + 5*self.params["rate"]
+        depth = 0.01 + 0.01*self.params["depth"]
+        base_delay = 0.002 + 0.01*self.params["delay"]
+        feedback = 0.001 * self.params["feedback"]
+        alpha = self.params["mix"]
+        fs = self.fs
+
+        samps = base_delay * self.fs
+        depth_samps = depth * self.fs
+
+        y = np.zeros_like(x)
+        phase = 0
+
+        for n in range(len(x)):
+            lfo1 = np.sin(phase)
+            lfo2 = np.cos(phase + 0.1)   # phase rotated by 90 degrees for simulating another instrument
+            tau1 = samps + depth_samps * lfo1
+            tau2 = samps + depth_samps * lfo2
+            chor_delay = self.delay_read(tau1) + self.delay_read(tau2)
+            y[n] = (1-alpha)*x[n] + (alpha/2)*chor_delay
+            self.delay_write(x[n] + feedback * chor_delay)
+            phase += 2*np.pi*rate/fs
+
+            # LITERALLY EVERYTHING THE SAME, now only mix/2 because 2 delays
+
+        return y
+
+class Delay(Effect):
+
+    # same as flanger - but delay is much longer, also no modulation and no mix
+
+    def __init__(self, feedback, mix, fs=44100):
+        super().__init__(fs)
+        self.params = {
+            "feedback": scale_down(feedback),
+            "mix": scale_down(mix)
+        }
+        self.enabled = False
+        self.max_delay = int(0.01 * self.fs)
+        self.buffer = np.zeros(self.max_delay)
+        self.write_idx = 0
+    
+    def upd_param(self):
+        pass
+
+    def set_param(self, name, val):
+        if val < 0 or val > 10:
+            val = scale_down(val)
+        self.params[name] = val
+        self.upd_param()
+
+    def toggle(self):
+        if self.enabled == True:
+            return False
+        else:
+            return True
+        
+    def delay_write(self, samples):
+        self.max_delay[self.write_idx] = samples
+        self.buffer = np.zeros(self.max_delay)
+        self.write_idx = (self.write_idx + 1) % self.max_delay
+        return None
+    
+    def delay_read(self, samples):
+        max_delay = len(self.buffer)
+        read_idx = self.write_idx - samples
+
+        while read_idx < 0:
+            read_idx += max_delay
+        while read_idx >= max_delay:
+            read_idx -= max_delay
+
+        i0 = int(read_idx)
+        i1 = (i0 + 1) % max_delay
+
+        f = read_idx - i0
+        delay = (1 - f) * self.buffer[i0] + f * self.buffer[i1]
+        return delay
+
+    def process(self, x):
+        if not self.enabled:
+            return x
+
+        base_delay = 0.05 + 1.5*self.params["delay"]  # for LOOOOOOOOOOONG delays
         feedback = 0.95 * self.params["feedback"]
         alpha = self.params["mix"]
 
@@ -477,3 +694,5 @@ class Flanger(Effect):
             self.delay_write(x[n] + feedback * delay)
 
         return y
+    
+### to-do: reverb/convolution, phaser/phase modulation, EQ/another bunch of shelves but more. the setup will be as much as test-ready after that
