@@ -18,15 +18,8 @@ class SchroederReverb:
     NB!!! RemindMe! remake the description
     """
 
-    def __init__(
-        self,
-        room_size=5,
-        damping=4,
-        mix=3,
-        level=5,
-        fs=44100,
-    ):
-
+    def __init__(self, room_size=5, damping=4, mix=3, level=5, fs=44100):
+        real_time_safe = True
         self.params = {
             "room_size": uts.normalize(room_size),
             "damping": uts.normalize(damping),
@@ -40,15 +33,8 @@ class SchroederReverb:
         self.comb_times = [0.0297, 0.0371, 0.0411, 0.0437]
         self.apf_times = [0.0050, 0.0017]
 
-        self.combs = [
-            flt.FeedbackComb(t, fs=fs)
-            for t in self.comb_times
-        ]
-
-        self.apfs = [
-            flt.DelayLine(t, g=0.5, fs=fs)
-            for t in self.apf_times
-        ]
+        self.combs = [flt.FeedbackComb(t, fs=fs) for t in self.comb_times]
+        self.apfs = [flt.DelayLine(t, g=0.5, fs=fs) for t in self.apf_times]
 
         self.upd_param()
 
@@ -117,6 +103,7 @@ class SchroederReverb:
 
 class FreeVerb:
     def __init__(self, room_size, damping, width, mix, level, fs=44100):
+        real_time_safe = True
         self.params = {
             "room_size": uts.normalize(room_size),
             "damping": uts.normalize(damping),
@@ -242,15 +229,8 @@ class FreeVerb:
         raise ValueError("Input must be mono shape (n,) or stereo shape (n, 2)")
     
 class ConvolutionReverb:
-    def __init__(
-        self,
-        ir,
-        mix=5,
-        level=5,
-        normalize_ir=True,
-        fs=44100,
-    ):
-
+    def __init__(self, ir, mix=5, level=5, normalize_ir=True, fs=44100):
+        real_time_safe = False
         self.params = {
             "mix": uts.normalize(mix),
             "level": uts.normalize(level),

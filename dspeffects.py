@@ -7,22 +7,15 @@ import filters as flt
 import utils as uts
 import reverbs as revb
 
-from scipy.signal import fftconvolve 
+from cabsim_engines import FilterCabEngine, IRCabEngine
+from basics import Effect
 
 # IGNORE; COPY-PASTEABLE CUSTOM LETTERS FOR FORMULAS
 # α
 # 𝜏
 # \(\pi \)
 
-# maybe a separate file for filters and scalings? porting the stuff to cpp will be HELL tho
-
-class Effect:
-    def __init__(self, fs):
-        self.fs = fs
-        self.enabled = False
-    
-    def process(self, x):
-        return x
+# maybe consider JUCE implementation? porting the stuff to cpp will be HELL tho
 
 class Compressor(Effect):
 
@@ -38,7 +31,6 @@ class Compressor(Effect):
             "r": r
         }
         self.fs = fs
-        self.enabled = False
         self.env = 0.0
         self.gain = 1.0
 
@@ -57,11 +49,6 @@ class Compressor(Effect):
             
         self.params[name] = val
         self.upd_param()
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
         
     def process(self, x):
         x = np.array(x, dtype=float)
@@ -148,7 +135,11 @@ class Overdrive(Effect):
         self.hpf.HPF(720)
         self.postclip_hpf = flt.Biquad(fs)
         self.postclip_hpf.HPF(20)
-        self.enabled = False
+    
+    def reset(self):
+        self.lpf.reset()
+        self.hpf.reset()
+        self.postclip_hpf.reset
 
     def upd_param(self):
         self.lpf.LPF(1000+(self.params["tone"]*4000))
@@ -179,10 +170,6 @@ class Overdrive(Effect):
             self.upd_param()
 
         return
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
     
     def _bound(self, x):   # MUST-USE btw. otherwise the final equation might explode
         clip = self.params["clip"]
@@ -213,7 +200,7 @@ class Overdrive(Effect):
         
         return self._bound(y)
         
-    def algo(self, x): 
+    def process_sample(self, x):
         vol = uts.volume_gain(self.params["level"])
 
         x = self.hpf.process(x)
@@ -222,16 +209,6 @@ class Overdrive(Effect):
         x = self.lpf.process(x)
 
         return vol * x
-    
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-        if not self.enabled:
-            return x.copy()
-
-        y = np.zeros_like(x)
-        for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
-        return y
     
 class Distortion(Effect):
 
@@ -278,7 +255,11 @@ class Distortion(Effect):
         self.tone_lpf.LPF(800+(self.params["tone"]*5200))
         self.tone_hpf = flt.Biquad(fs)
         self.tone_hpf.HPF(800+(self.params["tone"]*5200))
-        self.enabled = False
+
+    def reset(self):
+        self.hpf.reset()
+        self.tone_lpf.reset()
+        self.tone_hpf.reset()
 
     def upd_param(self):
         self.tone_lpf.LPF(800+(self.params["tone"]*5200))
@@ -310,10 +291,6 @@ class Distortion(Effect):
             self.upd_param()
 
         return
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
     
     def _seesaw(self, x, tone):
         low = self.tone_lpf.process(x)
@@ -347,7 +324,7 @@ class Distortion(Effect):
             
         return np.clip(y, -0.6, 0.6)
         
-    def algo(self, x):
+    def process_sample(self, x):
         
         level = self.params["level"]
 
@@ -358,16 +335,6 @@ class Distortion(Effect):
         x = self._tone_selector(x, self.params["filter"])
 
         return vol * x
-    
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-        if not self.enabled:
-            return x.copy()
-
-        y = np.zeros_like(x)
-        for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
-        return y
     
 class Fuzz(Effect):
 
@@ -409,8 +376,13 @@ class Fuzz(Effect):
         self.dc_block = flt.Biquad(fs)
         self.dc_block.HPF(20)
 
-        self.enabled = False
         self._filter_upd()
+    
+    def reset(self):
+        self.prehpf.reset()
+        self.tone_lpf.reset()
+        self.tone_hpf.reset()
+        self.dc_block.reset()
 
     def _freqs(self):
         tone = self.params["tone"]
@@ -446,10 +418,6 @@ class Fuzz(Effect):
             self.upd_param()
 
         return
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
         
     def _hardclip(self, x, T=1.0):
         e = 0.2
@@ -473,7 +441,7 @@ class Fuzz(Effect):
 
         return (1 - tone) * low + tone * high
         
-    def algo(self, x):
+    def process_sample(self, x):
         vol = uts.volume_gain(self.params["level"])
 
         # also screw your HPF, we going hard
@@ -483,16 +451,6 @@ class Fuzz(Effect):
         x = self._tone_stack(x)
 
         return vol * x
-    
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-        if not self.enabled:
-            return x.copy()
-
-        y = np.zeros_like(x)
-        for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
-        return y
 
 class BlockAmp(Effect):
 
@@ -542,7 +500,17 @@ class BlockAmp(Effect):
         self.trebFilterLO = flt.Biquad(fs)
         self.presFilterHI = flt.Biquad(fs)
         self.presFilterLO = flt.Biquad(fs)
-        self.enabled = False
+    
+    def reset(self):
+        self.toneFilterHI.reset()
+        self.bassFilterHI.reset()
+        self.bassFilterLO.reset()
+        self.midFilterHI.reset()
+        self.midFilterLO.reset()
+        self.trebFilterHI.reset()
+        self.trebFilterLO.reset()
+        self.presFilterHI.reset()
+        self.presFilterLO.reset()
 
     def _knob_gain_db(self, knob, max_boost_db):
         """
@@ -595,10 +563,6 @@ class BlockAmp(Effect):
             self.upd_param()
         
         return
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
         
     # tons of amp-specific peak-shelf filters ahead, nothing much. just stack em up and you have the block amp
     # too lazy to code the peak filter separately. sorry, so just a stack of hi-/lo-shelf filters
@@ -625,7 +589,7 @@ class BlockAmp(Effect):
             case _:
                 raise ValueError("Invalid clipping type")
     
-    def preamp_tone(self, x, drive):
+    def preamp_tone(self, x):
         """
         General setup for the "tone" knob at the block amp.
         """
@@ -635,7 +599,7 @@ class BlockAmp(Effect):
 
         return x
 
-    def preamp_bass(self, x, gain):
+    def preamp_bass(self, x):
 
         """
         Peak-filter/boost for the low-end/bass frequencies, typically ranging from 80 to 120 Hz. 
@@ -649,7 +613,7 @@ class BlockAmp(Effect):
 
         return x
 
-    def preamp_mid(self, x, gain):
+    def preamp_mid(self, x):
 
         """
         Peak-filter/boost for the mid-range frequencies, often determined to peak at 500-900 Hz.
@@ -663,7 +627,7 @@ class BlockAmp(Effect):
 
         return x
 
-    def preamp_treble(self, x, gain):
+    def preamp_treble(self, x):
 
         """
         Peak-filter/boost for the high-end/treble frequencies, typically ranging from 3000 to 5000 Hz.
@@ -678,7 +642,7 @@ class BlockAmp(Effect):
 
         return x
 
-    def preamp_presence(self, x, gain):
+    def preamp_presence(self, x):
 
         """
         Peak-filter/boost for the presence frequencies, typically ranging from 6000 to 10000 Hz.
@@ -692,7 +656,7 @@ class BlockAmp(Effect):
 
         return x
 
-    def algo(self, x):
+    def process_sample(self, x):
         
         tone = self.params["tone"]
         bass = self.params["bass"]
@@ -710,16 +674,6 @@ class BlockAmp(Effect):
         vol = uts.volume_gain(vol)
 
         return vol * x
-    
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-        if not self.enabled:
-            return x.copy()
-
-        y = np.zeros_like(x)
-        for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
-        return y
 
 class Flanger(Effect):
 
@@ -751,64 +705,45 @@ class Flanger(Effect):
 
     def __init__(self, rate, depth, feedback, mix, delay=5, fs=44100):
         super().__init__(fs)
+
         self.params = {
             "rate": uts.normalize(rate),
             "depth": uts.normalize(depth),
             "feedback": uts.normalize(feedback),
             "mix": uts.normalize(mix),
-            "delay": uts.normalize(delay)
+            "delay": uts.normalize(delay),
         }
-        self.enabled = False
+
         self.delayline = flt.DelayLine(max_delay_seconds=0.03, fs=fs)
         self.phase = 0.0
-    
-    def upd_param(self):
-        pass
 
-    def set_param(self, name, val):
-        if name not in self.params[name]:
-            raise ValueError(f"Invalid parameter name: {name}")
-        
-        if 0 <= val <= 10:
-            val = uts.normalize(val)
-        else:
-            raise ValueError(f"Parameter {name} must be in range [0, 10]")
-        
-        self.params[name] = val
-        self.upd_param()
+    def reset(self):
+        self.delayline.reset()
+        self.phase = 0.0
 
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-
-        if not self.enabled:
-            return x
-
+    def process_sample(self, x):
         rate = 0.05 + 5.0 * self.params["rate"]
-        depth = 0.0002 + 0.004 * self.params["depth"]  # 0.2-4.2 ms
-        base_delay = 0.0005 + 0.006 * self.params["delay"]  # 0.5-6.5 ms
-        feedback = 0.95 * self.params["feedback"]
+
+        base_delay = 0.0005 + 0.006 * self.params["delay"]
+        depth = 0.0002 + 0.004 * self.params["depth"]
+
+        feedback = 0.75 * self.params["feedback"]
         mix = self.params["mix"]
 
-        y = np.zeros_like(x)
+        lfo = 0.5 + 0.5 * np.sin(self.phase)
 
-        for n, sample in enumerate(x):
-            lfo = 0.5 + 0.5 * np.sin(self.phase)
-            tau = base_delay + depth * lfo
-            tau_samps = tau * self.fs
+        delay_samples = (base_delay + depth * lfo) * self.fs
 
-            delayed = self.delayline.read(tau_samps)
+        delayed = self.delayline.read(delay_samples)
 
-            y[n] = (1.0 - mix) * sample + mix * delayed
+        y = (1.0 - mix) * x + mix * delayed
 
-            self.delayline.write(sample + feedback * delayed)
+        self.delayline.write(x + feedback * delayed)
 
-            self.phase += 2.0 * np.pi * rate / self.fs
-            if self.phase >= 2.0 * np.pi:
-                self.phase -= 2.0 * np.pi
+        self.phase += 2.0 * np.pi * rate / self.fs
+
+        if self.phase >= 2.0 * np.pi:
+            self.phase -= 2.0 * np.pi
 
         return y
 
@@ -828,10 +763,13 @@ class Chorus(Effect):
             "mix": uts.normalize(mix),
             "delay": uts.normalize(delay)
         }
-        self.enabled = False
         self.delayline1 = flt.DelayLine(max_delay_seconds=0.08, fs=fs)
         self.delayline2 = flt.DelayLine(max_delay_seconds=0.08, fs=fs)
         self.phase = 0.0
+    
+    def reset(self):
+        self.delayline1.reset()
+        self.delayline2.reset()
     
     def upd_param(self):
         pass
@@ -848,11 +786,7 @@ class Chorus(Effect):
         self.params[name] = val
         self.upd_param()
 
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
-    def process(self, x):
+    def process_sample(self, x):
         x = np.asarray(x, dtype=float)
 
         if not self.enabled:
@@ -910,8 +844,10 @@ class Delay(Effect):
             "div": div,
             "echo": echo
         }
-        self.enabled = False
         self.delayline = flt.DelayLine(max_delay_seconds=max_delay_seconds, fs=fs)
+
+    def reset(self):
+        self.delayline.reset()
     
     def _delay_seconds(self):
         mode = self.params["mode"]
@@ -973,11 +909,7 @@ class Delay(Effect):
 
         self.params[name] = val
 
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
-    def process(self, x):
+    def process_sample(self, x):
         x = np.asarray(x, dtype=float)
 
         if not self.enabled:
@@ -1016,7 +948,6 @@ class Phaser(Effect):
             "min_freq": float(min_freq),
             "max_freq": float(max_freq)
         }
-        self.enabled = False
         self.phase = 0.0
         self.fb_state = 0.0
 
@@ -1085,10 +1016,6 @@ class Phaser(Effect):
             self.params[name] = float(val)
             return
 
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
     def _current_sweep_freq(self):
         depth = self.params["depth"]
         min_f = self.params["min_freq"]
@@ -1106,7 +1033,7 @@ class Phaser(Effect):
 
         return np.exp(log_min + lfo * (log_max - log_min))
 
-    def algo(self, x):
+    def process_sample(self, x):
         rate = 0.05 + 5.0 * self.params["rate"]
         feedback = 0.95 * self.params["feedback"]
         mix = self.params["mix"]
@@ -1134,19 +1061,6 @@ class Phaser(Effect):
             self.phase -= 2.0 * np.pi
 
         return y
-
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-
-        if not self.enabled:
-            return x.copy()
-
-        y = np.zeros_like(x)
-
-        for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
-
-        return y
         
 class Reverb(Effect):
     # the big bad chonky boy, with all his bros and sisters
@@ -1156,7 +1070,6 @@ class Reverb(Effect):
     def __init__(self, mode="schroeder", fs=44100, ir=None, **kwargs):
         super().__init__(fs)
         self.mode = mode
-        self.enabled = False
 
         match mode:
             case "schroeder":
@@ -1172,20 +1085,21 @@ class Reverb(Effect):
             
         self.engine.enabled = True
 
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
+    @property
+    def real_time_safe(self):
+        return getattr(self.engine, "real_time_safe", True)
 
     def set_param(self, name, val):
         self.engine.set_param(name, val)
 
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
+    def process_sample(self, x):
+        return self.engine.process_sample(x)
 
+    def process_block(self, x):
         if not self.enabled:
-            return x.copy()
+            return np.asarray(x, dtype=float).copy()
 
-        return self.engine.process(x)
+        return self.engine.process_block(x)
     
 class EQ(Effect):
     # at last we got here. idk no songs for heavy EQ use, but let it be smh
@@ -1248,10 +1162,6 @@ class EQ(Effect):
         self.grph_filters = [flt.Biquad(fs) for _ in self.grph_freqs]
 
         # placeholder for filter updates
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
     
     def reset(self):
         for f in self.param_filters:
@@ -1376,7 +1286,7 @@ class EQ(Effect):
         gain = self.grph_gains[index]
         self.grph_filters[index].Peak(fc, gain, self.grph_Q)
 
-    def _process_sample(self, x):
+    def process_sample(self, x):
         y = x
 
         if self.params["use_parametric"]:
@@ -1390,42 +1300,19 @@ class EQ(Effect):
 
         return uts.volume_gain(self.params["level"]) * y
 
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-
-        if not self.enabled:
-            return x.copy()
-
-        if x.ndim == 1:
-            y = np.zeros_like(x)
-
-            for n, sample in enumerate(x):
-                y[n] = self._process_sample(sample)
-
-            return y
-
-        if x.ndim == 2 and x.shape[1] == 2:
-            y = np.zeros_like(x)
-
-            # Important: this mono filter state is not ideal for stereo.
-            # Better stereo version shown below.
-            for n in range(len(x)):
-                y[n, 0] = self._process_sample(x[n, 0])
-                y[n, 1] = self._process_sample(x[n, 1])
-
-            return y
-
-        raise ValueError("Input must be mono shape (n,) or stereo shape (n, 2)")
-
 class CabSim(Effect):
     # good cabsim = good tone. otherwise nothing, literally NOTHING will save you. you'll be subject to eternal damnation, lol
-    def __init__(self, mode="filter", cab="closed_4x12", ir=None, mix=10, level=10, normalize_ir=True, fs=44100):
+    def __init__(self, mode="filter", cab="closed_4x12", ir=None, mix=10, level=10, normalize_ir=True, fs=44100,):
         super().__init__(fs)
+
         if mode not in ("filter", "ir"):
             raise ValueError("mode must be 'filter' or 'ir'")
 
         if cab not in uts.CABSIM_PRESETS:
             raise ValueError(f"Unknown cab preset: {cab}")
+
+        if mode == "ir" and ir is None:
+            raise ValueError("mode='ir' requires an impulse response")
 
         self.params = {
             "mode": mode,
@@ -1434,25 +1321,39 @@ class CabSim(Effect):
             "level": uts.normalize(level),
         }
 
-        self.enabled = False
+        self._ir = None
+        self._normalize_ir = normalize_ir
 
-        self.filter_l = flt.CabFiltChain(fs, uts.CABSIM_PRESETS[cab])
-        self.filter_r = flt.CabFiltChain(fs, uts.CABSIM_PRESETS[cab])
-
-        self.ir = None
         if ir is not None:
-            self.set_ir(ir, normalize_ir=normalize_ir)
+            self._ir = np.asarray(ir, dtype=float)
 
-        if mode == "ir" and self.ir is None:
-            raise ValueError("mode='ir' requires an impulse response")
-    
+        self.engine = self._make_engine(mode)
+
+    @property
+    def real_time_safe(self):
+        return getattr(self.engine, "real_time_safe", True)
+
+    def _make_engine(self, mode):
+        if mode == "filter":
+            return FilterCabEngine(
+                fs=self.fs,
+                cab=self.params["cab"],
+            )
+
+        if mode == "ir":
+            if self._ir is None:
+                raise ValueError("Cannot create IR cab engine without an IR")
+
+            return IRCabEngine(
+                ir=self._ir,
+                normalize_ir=self._normalize_ir,
+                fs=self.fs,
+            )
+
+        raise ValueError(f"Invalid cab sim mode: {mode}")
+
     def reset(self):
-        self.filter_l.reset()
-        self.filter_r.reset()
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
+        self.engine.reset()
 
     def set_param(self, name, val):
         if name not in self.params:
@@ -1461,18 +1362,25 @@ class CabSim(Effect):
         if name == "mode":
             if val not in ("filter", "ir"):
                 raise ValueError("mode must be 'filter' or 'ir'")
-            if val == "ir" and self.ir is None:
+
+            if val == "ir" and self._ir is None:
                 raise ValueError("Cannot use mode='ir' without loading an IR")
-            self.params[name] = val
+
+            if val != self.params["mode"]:
+                self.params["mode"] = val
+                self.engine = self._make_engine(val)
+
             return
 
         if name == "cab":
             if val not in uts.CABSIM_PRESETS:
                 raise ValueError(f"Unknown cab preset: {val}")
 
-            self.params[name] = val
-            self.filter_l.configure(uts.CABSIM_PRESETS[val])
-            self.filter_r.configure(uts.CABSIM_PRESETS[val])
+            self.params["cab"] = val
+
+            if self.params["mode"] == "filter":
+                self.engine.set_cab(val)
+
             return
 
         if name in ("mix", "level"):
@@ -1480,112 +1388,46 @@ class CabSim(Effect):
                 self.params[name] = uts.normalize(val)
             else:
                 raise ValueError(f"{name} must be in range [0, 10]")
+
             return
-    
+
     def set_ir(self, ir, normalize_ir=True):
-        ir = np.asarray(ir, dtype=float)
+        self._ir = np.asarray(ir, dtype=float)
+        self._normalize_ir = normalize_ir
 
-        if ir.ndim not in (1, 2):
-            raise ValueError("IR must be mono shape (n,) or stereo shape (n, 2)")
+        if self.params["mode"] == "ir":
+            self.engine = IRCabEngine(
+                ir=self._ir,
+                normalize_ir=normalize_ir,
+                fs=self.fs,
+            )
 
-        if ir.ndim == 2 and ir.shape[1] != 2:
-            raise ValueError("Stereo IR must have shape (n, 2)")
+    def process_sample(self, x):
+        if self.params["mode"] != "filter":
+            raise RuntimeError("CabSim.process_sample() only works in filter mode")
 
-        if normalize_ir:
-            peak = np.max(np.abs(ir))
-            if peak > 0:
-                ir = ir / peak
+        wet = self.engine.process_sample(x)
 
-        self.ir = ir
-    
-    def _process_filter_mono(self, x):
-        y = np.zeros_like(x)
+        mix = self.params["mix"]
+        level = uts.volume_gain(self.params["level"])
 
-        for n, sample in enumerate(x):
-            y[n] = self.filter_l.process(sample)
+        return level * ((1.0 - mix) * x + mix * wet)
 
-        return y
-
-    def _process_filter_stereo(self, x):
-        y = np.zeros_like(x)
-
-        for n in range(len(x)):
-            y[n, 0] = self.filter_l.process(x[n, 0])
-            y[n, 1] = self.filter_r.process(x[n, 1])
-
-        return y
-
-    def _process_ir(self, x):
-        if self.ir is None:
-            raise ValueError("No IR loaded")
-
-        ir = self.ir
-
-        # Mono input + mono IR → mono output
-        if x.ndim == 1 and ir.ndim == 1:
-            return fftconvolve(x, ir, mode="full")[:len(x)]
-
-        # Mono input + stereo IR → stereo output
-        if x.ndim == 1 and ir.ndim == 2:
-            wet_l = fftconvolve(x, ir[:, 0], mode="full")[:len(x)]
-            wet_r = fftconvolve(x, ir[:, 1], mode="full")[:len(x)]
-
-            y = np.zeros((len(x), 2), dtype=float)
-            y[:, 0] = wet_l
-            y[:, 1] = wet_r
-            return y
-
-        # Stereo input + mono IR → stereo output
-        if x.ndim == 2 and x.shape[1] == 2 and ir.ndim == 1:
-            y = np.zeros_like(x)
-
-            y[:, 0] = fftconvolve(x[:, 0], ir, mode="full")[:len(x)]
-            y[:, 1] = fftconvolve(x[:, 1], ir, mode="full")[:len(x)]
-
-            return y
-
-        # Stereo input + stereo IR → channel-wise stereo output
-        if x.ndim == 2 and x.shape[1] == 2 and ir.ndim == 2:
-            y = np.zeros_like(x)
-
-            y[:, 0] = fftconvolve(x[:, 0], ir[:, 0], mode="full")[:len(x)]
-            y[:, 1] = fftconvolve(x[:, 1], ir[:, 1], mode="full")[:len(x)]
-
-            return y
-
-        raise ValueError("Unsupported input/IR shape combination")
-
-    def process(self, x):
+    def process_block(self, x):
         x = np.asarray(x, dtype=float)
 
         if not self.enabled:
             return x.copy()
 
-        mode = self.params["mode"]
+        wet = self.engine.process_block(x)
+
         mix = self.params["mix"]
         level = uts.volume_gain(self.params["level"])
 
-        if mode == "filter":
-            if x.ndim == 1:
-                wet = self._process_filter_mono(x)
-                return level * ((1.0 - mix) * x + mix * wet)
+        # Mono dry + stereo wet, for mono input + stereo IR.
+        if x.ndim == 1 and wet.ndim == 2:
+            dry = np.column_stack([x, x])
+        else:
+            dry = x
 
-            if x.ndim == 2 and x.shape[1] == 2:
-                wet = self._process_filter_stereo(x)
-                return level * ((1.0 - mix) * x + mix * wet)
-
-            raise ValueError("Input must be mono shape (n,) or stereo shape (n, 2)")
-
-        if mode == "ir":
-            wet = self._process_ir(x)
-
-            # Mono input + stereo IR gives stereo wet output.
-            # In that case, duplicate dry signal for mixing.
-            if x.ndim == 1 and wet.ndim == 2:
-                dry = np.column_stack([x, x])
-            else:
-                dry = x
-
-            return level * ((1.0 - mix) * dry + mix * wet)
-
-        raise ValueError(f"Invalid cab sim mode: {mode}")
+        return level * ((1.0 - mix) * dry + mix * wet)
