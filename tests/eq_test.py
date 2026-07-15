@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from dspeffects import EQ
+from audio.effects.dspeffects import EQ
 
 
 def test_eq_bypass_returns_copy_and_same_values():

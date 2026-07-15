@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy.signal import freqz, lfilter
 
-from filters import Biquad, DelayRevAPF
+from audio.misc.filters import Biquad, DelayRevAPF
 
 
 def db(x):

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from dspeffects import Overdrive, Distortion, Fuzz, BlockAmp
+from audio.effects.dspeffects import Overdrive, Distortion, Fuzz, BlockAmp
 
 
 @pytest.mark.parametrize("cls,args", [

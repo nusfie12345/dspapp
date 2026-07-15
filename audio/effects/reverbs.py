@@ -1,6 +1,7 @@
 import numpy as np
-import utils as uts
-import filters as flt
+import audio.misc.utils as uts
+import audio.misc.filters as flt
+import audio.misc.jit_optimizer as speed
 
 from scipy.signal import fftconvolve
 
@@ -18,89 +19,173 @@ class SchroederReverb:
     NB!!! RemindMe! remake the description
     """
 
-    def __init__(self, room_size=5, damping=4, mix=3, level=5, fs=44100):
-        real_time_safe = True
+    real_time_safe = True
+
+    def __init__(self, room_size=3, damping=7, fs=44100):
+        self.fs = fs
+
         self.params = {
             "room_size": uts.normalize(room_size),
             "damping": uts.normalize(damping),
-            "mix": uts.normalize(mix),
-            "level": uts.normalize(level),
         }
 
-        self.enabled = False
-
-        # Prime-ish / non-overlapping delay times help reduce metallic ringing.
         self.comb_times = [0.0297, 0.0371, 0.0411, 0.0437]
-        self.apf_times = [0.0050, 0.0017]
+        self.apf_times = [0.0053, 0.0017]
 
-        self.combs = [flt.FeedbackComb(t, fs=fs) for t in self.comb_times]
-        self.apfs = [flt.DelayLine(t, g=0.5, fs=fs) for t in self.apf_times]
+        self.combs = [
+            flt.FeedbackComb(t, fs=fs)
+            for t in self.comb_times
+        ]
 
-        self.upd_param()
+        self.apfs = [
+            flt.DelayRevAPF(t, g=0.5, fs=fs)
+            for t in self.apf_times
+        ]
+
+        self._update_params()
 
     def reset(self):
         for comb in self.combs:
             comb.reset()
+
         for apf in self.apfs:
             apf.reset()
 
-    def upd_param(self):
-        # room_size 0..1 → feedback 0.55..0.88
-        feedback = 0.55 + 0.33 * self.params["room_size"]
-
-        # damping 0..1; higher means darker / more damped.
-        damping = 0.05 + 0.75 * self.params["damping"]
+    def _update_params(self):
+        # Conservative first.
+        feedback = 0.40 + 0.30 * self.params["room_size"]
+        damping = 0.20 + 0.70 * self.params["damping"]
 
         for comb in self.combs:
-            comb.set_params(feedback=feedback, damping=damping)
+            comb.set_params(
+                feedback=feedback,
+                damping=damping,
+            )
 
     def set_param(self, name, val):
         if name not in self.params:
-            raise ValueError(f"Invalid parameter name: {name}")
+            raise ValueError(f"Invalid SchroederReverb parameter name: {name}")
 
-        if 0 <= val <= 10:
-            val = uts.normalize(val)
-        else:
+        if not 0 <= val <= 10:
             raise ValueError(f"{name} must be in range [0, 10]")
 
-        self.params[name] = val
+        self.params[name] = uts.normalize(val)
+        self._update_params()
 
-        if name in ("room_size", "damping"):
-            self.upd_param()
-
-    def toggle(self):
-        self.enabled = not self.enabled
-        return self.enabled
-
-    def algo(self, x):
+    def process_sample(self, x):
         wet = 0.0
 
         for comb in self.combs:
             wet += comb.process(x)
 
-        wet *= 1.0 / len(self.combs)
+        wet *= 0.25
 
         for apf in self.apfs:
             wet = apf.process(wet)
 
-        mix = self.params["mix"]
-        level = uts.volume_gain(self.params["level"])
+        return 0.25 * wet
 
-        return level * ((1.0 - mix) * x + mix * wet)
+    def process_block(self, x):
+        x = np.asarray(x, dtype=np.float32)
 
-    def process(self, x):
-        x = np.asarray(x, dtype=float)
-
-        if not self.enabled:
-            return x.copy()
+        if x.ndim != 1:
+            raise ValueError(f"SchroederReverb expects mono input shape (n,), got {x.shape}")
 
         y = np.zeros_like(x)
 
         for n, sample in enumerate(x):
-            y[n] = self.algo(sample)
+            y[n] = self.process_sample(float(sample))
 
         return y
 
+class LiteSchroederReverb:
+    real_time_safe = True
+
+    def __init__(self, room_size=3, damping=7, fs=44100):
+        self.fs = fs
+
+        self.params = {
+            "room_size": uts.normalize(room_size),
+            "damping": uts.normalize(damping),
+        }
+
+        self.comb_times = np.array([0.0297, 0.0371], dtype=np.float32)
+        self.apf_times = np.array([0.0050], dtype=np.float32)
+        self.apf_gains = np.array([0.5], dtype=np.float32)
+
+        max_comb_size = int(np.ceil((np.max(self.comb_times) + 0.02) * fs)) + 4
+        max_apf_size = int(np.ceil((np.max(self.apf_times) + 0.02) * fs)) + 4
+
+        self.comb_buffers = np.zeros(
+            (len(self.comb_times), max_comb_size),
+            dtype=np.float32,
+        )
+
+        self.apf_buffers = np.zeros(
+            (len(self.apf_times), max_apf_size),
+            dtype=np.float32,
+        )
+
+        self.comb_sizes = np.array(
+            [max_comb_size for _ in self.comb_times],
+            dtype=np.int64,
+        )
+
+        self.apf_sizes = np.array(
+            [max_apf_size for _ in self.apf_times],
+            dtype=np.int64,
+        )
+
+        self.comb_write_idxs = np.zeros(len(self.comb_times), dtype=np.int64)
+        self.apf_write_idxs = np.zeros(len(self.apf_times), dtype=np.int64)
+
+        self.comb_delay_samples = self.comb_times.astype(np.float32) * fs
+        self.apf_delay_samples = self.apf_times.astype(np.float32) * fs
+
+        self.comb_filter_states = np.zeros(len(self.comb_times), dtype=np.float32)
+
+    def reset(self):
+        self.comb_buffers.fill(0.0)
+        self.apf_buffers.fill(0.0)
+
+        self.comb_write_idxs.fill(0)
+        self.apf_write_idxs.fill(0)
+
+        self.comb_filter_states.fill(0.0)
+
+    def set_param(self, name, val):
+        if name not in self.params:
+            raise ValueError(f"Invalid reverb parameter: {name}")
+
+        if not 0 <= val <= 10:
+            raise ValueError(f"{name} must be in range [0, 10]")
+
+        self.params[name] = uts.normalize(val)
+
+    def process_block(self, x):
+        x = np.asarray(x, dtype=np.float32)
+
+        if x.ndim != 1:
+            raise ValueError(
+                f"FastLiteSchroederReverb expects mono input shape (n,), got {x.shape}"
+            )
+
+        return speed.lite_reverb_kernel(
+            x,
+            self.comb_buffers,
+            self.comb_sizes,
+            self.comb_write_idxs,
+            self.comb_delay_samples,
+            self.comb_filter_states,
+            self.apf_buffers,
+            self.apf_sizes,
+            self.apf_write_idxs,
+            self.apf_delay_samples,
+            self.apf_gains,
+            self.params["room_size"],
+            self.params["damping"],
+        )
+    
 class FreeVerb:
     def __init__(self, room_size, damping, width, mix, level, fs=44100):
         real_time_safe = True
@@ -323,3 +408,20 @@ class ConvolutionReverb:
             return y
 
         raise ValueError("Unsupported input/IR shape combination")
+    
+# temporary
+
+class ZeroWetEngine:
+    real_time_safe = True
+
+    def reset(self):
+        pass
+
+    def set_param(self, name, val):
+        pass
+
+    def process_sample(self, x):
+        return 0.0
+
+    def process_block(self, x):
+        return np.zeros_like(x, dtype=np.float32)

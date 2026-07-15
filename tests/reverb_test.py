@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from dspeffects import Reverb, CabSim
-from reverbs import (
+from audio.effects.dspeffects import Reverb, CabSim
+from audio.effects.reverbs import (
     SchroederReverb,
     FreeVerb,
     ConvolutionReverb,

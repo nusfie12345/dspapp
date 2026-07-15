@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.signal import fftconvolve
 
-import filters as flt
-import utils as uts
+import audio.misc.filters as flt
+import audio.misc.utils as uts
 
 
 class FilterCabEngine:
@@ -39,19 +39,15 @@ class FilterCabEngine:
         x = np.asarray(x, dtype=float)
 
         if x.ndim == 1:
-            y = np.zeros_like(x)
-
-            for n, sample in enumerate(x):
-                y[n] = self.filter_l.process(sample)
+            y = self.filter_l.process(x)
 
             return y
 
         if x.ndim == 2 and x.shape[1] == 2:
             y = np.zeros_like(x)
 
-            for n in range(len(x)):
-                y[n, 0] = self.filter_l.process(x[n, 0])
-                y[n, 1] = self.filter_r.process(x[n, 1])
+            y[:, 0] = self.filter_l.process(x[:, 0])
+            y[:, 1] = self.filter_r.process(x[:, 1])
 
             return y
 

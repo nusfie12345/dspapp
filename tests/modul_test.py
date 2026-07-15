@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from dspeffects import Delay, Flanger, Chorus, Phaser
-from utils import bpm_to_delay_seconds, feedback_from_echoes
-from filters import FirstOrderAPF, DelayLine
+from audio.effects.dspeffects import Delay, Flanger, Chorus, Phaser
+from audio.misc.utils import bpm_to_delay_seconds, feedback_from_echoes
+from audio.misc.filters import FirstOrderAPF, DelayLine
 
 
 def test_bpm_to_delay_seconds_quarter_note():
